@@ -10,44 +10,60 @@ app.use(express.urlencoded({ extended: true }));
 // Load tasks from task.json into memory
 const tasksFilePath = path.join(__dirname, 'task.json');
 let tasks = [];
+let nextId = 1; // added counter
 
 function loadTasks() {
     try {
         const data = fs.readFileSync(tasksFilePath, 'utf-8');
-        tasks = JSON.parse(data).tasks;
+        const parsed = JSON.parse(data);
+
+        tasks = parsed.tasks || [];
+
+        // ✅ fix ID duplication issue
+        nextId = tasks.length > 0
+            ? Math.max(...tasks.map(t => t.id)) + 1
+            : 1;
+
     } catch (err) {
-        console.error('Error loading tasks:', err);
-        tasks = [];
+        console.error('Error loading tasks:', err.message);
+
+        // ❗ early return (don't overwrite tasks blindly)
+        return;
     }
 }
 
 // Load tasks on startup
 loadTasks();
 
-// Helper function to find the next available ID
+// Helper function to get next ID
 function getNextId() {
-    if (tasks.length === 0) return 1;
-    return Math.max(...tasks.map(t => t.id)) + 1;
+    return nextId++; // ✅ safe unique ID
 }
 
 // Validation middleware
 function validateTaskInput(req, res, next) {
-    const { title, description, completed } = req.body;
+    let { title, description, completed } = req.body;
 
-    // Check if title and description are provided and are strings
-    if (!title || typeof title !== 'string' || !description || typeof description !== 'string') {
+    // ✅ better validation
+    if (!title || typeof title !== 'string') {
         return res.status(400).json({
-            error: 'Invalid input. Title and description are required and must be strings.'
+            error: 'Title is required and must be a string.'
         });
     }
 
-    // For PUT requests, validate completed field if provided
-    if (req.method === 'PUT' && completed !== undefined) {
-        if (typeof completed !== 'boolean') {
-            return res.status(400).json({
-                error: 'Invalid input. Completed must be a boolean.'
-            });
-        }
+    if (!description || typeof description !== 'string') {
+        return res.status(400).json({
+            error: 'Description is required and must be a string.'
+        });
+    }
+
+    // ✅ handle completed properly
+    if (completed === undefined) {
+        req.body.completed = false;
+    } else if (typeof completed !== 'boolean') {
+        return res.status(400).json({
+            error: 'Completed must be a boolean.'
+        });
     }
 
     next();
@@ -55,7 +71,7 @@ function validateTaskInput(req, res, next) {
 
 // POST /tasks - Create a new task
 app.post('/tasks', validateTaskInput, (req, res) => {
-    const { title, description, completed = false } = req.body;
+    const { title, description, completed } = req.body;
 
     const newTask = {
         id: getNextId(),
@@ -71,7 +87,15 @@ app.post('/tasks', validateTaskInput, (req, res) => {
 
 // GET /tasks - Get all tasks
 app.get('/tasks', (req, res) => {
-    res.status(200).json(tasks);
+    try {
+        const data = fs.readFileSync(tasksFilePath, 'utf-8');
+        const parsed = JSON.parse(data);
+        const tasksFromFile = parsed.tasks || [];
+        res.status(200).json(tasksFromFile);
+    } catch (err) {
+        console.error('Error reading tasks:', err.message);
+        res.status(500).json({ error: 'Error reading tasks from file.' });
+    }
 });
 
 // GET /tasks/:id - Get a specific task
@@ -82,13 +106,21 @@ app.get('/tasks/:id', (req, res) => {
         return res.status(400).json({ error: 'Invalid task ID.' });
     }
 
-    const task = tasks.find(t => t.id === taskId);
+    try {
+        const data = fs.readFileSync(tasksFilePath, 'utf-8');
+        const parsed = JSON.parse(data);
+        const tasksFromFile = parsed.tasks || [];
+        const task = tasksFromFile.find(t => t.id === taskId);
 
-    if (!task) {
-        return res.status(404).json({ error: 'Task not found.' });
+        if (!task) {
+            return res.status(404).json({ error: 'Task not found.' });
+        }
+
+        res.status(200).json(task);
+    } catch (err) {
+        console.error('Error reading tasks:', err.message);
+        res.status(500).json({ error: 'Error reading tasks from file.' });
     }
-
-    res.status(200).json(task);
 });
 
 // PUT /tasks/:id - Update a task
@@ -109,9 +141,7 @@ app.put('/tasks/:id', validateTaskInput, (req, res) => {
 
     task.title = title;
     task.description = description;
-    if (completed !== undefined) {
-        task.completed = completed;
-    }
+    task.completed = completed;
 
     res.status(200).json(task);
 });
@@ -130,21 +160,26 @@ app.delete('/tasks/:id', (req, res) => {
         return res.status(404).json({ error: 'Task not found.' });
     }
 
+    // ✅ ensure deletion happens before response
     const deletedTask = tasks.splice(taskIndex, 1)[0];
 
-    res.status(200).json({ message: 'Task deleted successfully.', task: deletedTask });
+    res.status(200).json({
+        message: 'Task deleted successfully.',
+        task: deletedTask
+    });
 });
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-    console.error('Error:', err);
+    console.error('Error:', err.message); // ✅ cleaner log
     res.status(500).json({ error: 'Internal server error.' });
 });
 
 if (require.main === module) {
     app.listen(port, (err) => {
         if (err) {
-            return console.log('Something bad happened', err);
+            console.error('Server error:', err);
+            return;
         }
         console.log(`Server is listening on ${port}`);
     });
